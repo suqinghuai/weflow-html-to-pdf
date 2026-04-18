@@ -1,4 +1,4 @@
-# WEFLOW 聊天记录 HTML 转 PDF 插件
+# Weflow 聊天记录 HTML 转 PDF 插件
 
 ## 插件介绍
 
