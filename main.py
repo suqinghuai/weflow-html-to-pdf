@@ -3,6 +3,8 @@ import json
 import os
 import re
 import sys
+import threading
+import time
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -186,20 +188,11 @@ def convert_html_to_pdf(html_files, output_dir: Path):
             context = browser.new_context()
 
             for html_path in html_files:
-                print(f"\n🔄 正在转换：{html_path.name}")
-                page = context.new_page()
-                page.goto(html_path.resolve().as_uri())
-
-                pdf_bytes = page.pdf(
-                    format="A4",
-                    print_background=True,
-                    prefer_css_page_size=True,
-                )
-
-                pdf_path = output_dir / f"{html_path.stem}.pdf"
-                pdf_path.write_bytes(pdf_bytes)
-                page.close()
-                print(f"✅ 已完成：{pdf_path.name}")
+                success = convert_single_file_with_timeout(context, html_path, output_dir)
+                if not success:
+                    print(f"\n⚠️  文件 {html_path.name} 转换失败或被跳过")
+                    browser.close()
+                    return False
 
             browser.close()
             print("\n🎉 全部 PDF 转换完成。")
@@ -208,6 +201,87 @@ def convert_html_to_pdf(html_files, output_dir: Path):
     except Exception as exc:
         print(f"\n❌ PDF 转换时出现错误：{exc}")
         return False
+
+
+def convert_single_file_with_timeout(context, html_path: Path, output_dir: Path, max_retries: int = 3, timeout_seconds: int = 600):
+    """转换单个HTML文件，支持超时和重试机制。"""
+    retry_count = 0
+    
+    while retry_count < max_retries:
+        print(f"\n🔄 正在转换：{html_path.name} (尝试 {retry_count + 1}/{max_retries})")
+        
+        conversion_result = {'success': False, 'error': None, 'timeout': False}
+        conversion_thread = threading.Thread(
+            target=perform_conversion,
+            args=(context, html_path, output_dir, conversion_result)
+        )
+        conversion_thread.daemon = True
+        conversion_thread.start()
+        conversion_thread.join(timeout=timeout_seconds)
+        
+        if conversion_thread.is_alive():
+            print(f"⏱️  转换超时（超过 {timeout_seconds // 60} 分钟）")
+            retry_count += 1
+            
+            if retry_count >= max_retries:
+                print("\n" + "=" * 60)
+                print("❌ 转换时间过长，请减小每个文件包含的消息数量后重试")
+                print("=" * 60)
+                print("\n请选择接下来怎么操作：")
+                print("  1. 重试（重新尝试转换当前文件）")
+                print("  2. 跳过（跳过当前文件，继续处理下一个文件）")
+                print("  3. 退出（退出程序）")
+                
+                while True:
+                    choice = input("\n请输入选项 (1/2/3): ").strip()
+                    if choice == '1':
+                        retry_count = 0
+                        break
+                    elif choice == '2':
+                        print(f"⏭️  已跳过：{html_path.name}")
+                        return True
+                    elif choice == '3':
+                        print("👋 程序已退出")
+                        return False
+                    else:
+                        print("❌ 无效选项，请重新输入")
+            else:
+                print(f"🔄 正在进行第 {retry_count + 1} 次重试...")
+        elif conversion_result['success']:
+            print(f"✅ 已完成：{conversion_result['pdf_path'].name}")
+            return True
+        else:
+            print(f"❌ 转换失败：{conversion_result['error']}")
+            retry_count += 1
+            if retry_count >= max_retries:
+                print(f"❌ 文件 {html_path.name} 转换失败，已达到最大重试次数")
+                return False
+            print(f"🔄 正在进行第 {retry_count + 1} 次重试...")
+    
+    return False
+
+
+def perform_conversion(context, html_path: Path, output_dir: Path, result: dict):
+    """执行实际的PDF转换操作。"""
+    try:
+        page = context.new_page()
+        page.goto(html_path.resolve().as_uri())
+
+        pdf_bytes = page.pdf(
+            format="A4",
+            print_background=True,
+            prefer_css_page_size=True,
+        )
+
+        pdf_path = output_dir / f"{html_path.stem}.pdf"
+        pdf_path.write_bytes(pdf_bytes)
+        page.close()
+        
+        result['success'] = True
+        result['pdf_path'] = pdf_path
+    except Exception as exc:
+        result['success'] = False
+        result['error'] = str(exc)
 
 
 def wait_for_key():
