@@ -153,7 +153,10 @@ def get_available_browser(playwright):
     """自动检测可用的 Chromium 系浏览器。"""
     browsers_to_try = [
         ("msedge", "Microsoft Edge"),
+        ("msedge-beta", "Microsoft Edge Beta"),
+        ("msedge-dev", "Microsoft Edge Dev"),
         ("chrome", "Google Chrome"),
+        ("chrome-beta", "Google Chrome Beta"),
         ("chromium", "Chromium"),
     ]
 
@@ -164,9 +167,56 @@ def get_available_browser(playwright):
             print(f"✅ 浏览器可用：{browser_name}")
             return browser, browser_name
         except Exception as exc:
-            print(f"❌ {browser_name} 不可用：{exc}")
+            error_msg = str(exc)
+            print(f"❌ {browser_name} 不可用：{error_msg}")
+            if "executable" in error_msg.lower() or "not found" in error_msg.lower():
+                print(f"   💡 提示：{browser_name} 可能未安装或路径不正确")
+            continue
 
     return None, None
+
+
+def get_manual_browser_path():
+    """获取用户手动输入的浏览器路径。"""
+    print("\n" + "=" * 60)
+    print("🔍 自动检测浏览器失败，请手动指定浏览器路径")
+    print("=" * 60)
+    print("💡 常见浏览器路径示例：")
+    print("   Microsoft Edge: C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe")
+    print("   Google Chrome: C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe")
+    print("=" * 60)
+    
+    while True:
+        browser_path = input("\n请输入浏览器exe文件的完整路径（或输入 'q' 退出程序）: ").strip().strip('"')
+        
+        if browser_path.lower() == 'q':
+            return None
+        
+        if not browser_path:
+            print("❌ 路径不能为空，请重新输入")
+            continue
+        
+        if not browser_path.endswith('.exe'):
+            print("⚠️  警告：路径似乎不是exe文件，请确认")
+        
+        if not os.path.exists(browser_path):
+            print(f"❌ 文件不存在：{browser_path}")
+            print("   请检查路径是否正确，或尝试拖拽文件到此处")
+            continue
+        
+        return browser_path
+
+
+def launch_browser_with_path(playwright, browser_path):
+    """使用指定路径启动浏览器。"""
+    try:
+        print(f"🌐 正在尝试启动浏览器：{browser_path}")
+        browser = playwright.chromium.launch(executable_path=browser_path, headless=True)
+        print(f"✅ 浏览器启动成功")
+        return browser, os.path.basename(browser_path)
+    except Exception as exc:
+        print(f"❌ 使用指定路径启动浏览器失败：{exc}")
+        return None, None
 
 
 def convert_html_to_pdf(html_files, output_dir: Path):
@@ -176,13 +226,27 @@ def convert_html_to_pdf(html_files, output_dir: Path):
     try:
         with sync_playwright() as playwright:
             browser, browser_name = get_available_browser(playwright)
+            
             if browser is None:
-                print("\n❌ 转换失败：没有找到可用浏览器。")
-                print("💡 你可以运行以下命令安装浏览器：")
-                print("  - playwright install msedge")
-                print("  - playwright install chrome")
-                print("  - playwright install chromium")
-                return False
+                print("\n" + "=" * 60)
+                print("❌ 自动检测浏览器失败")
+                print("=" * 60)
+                
+                browser_path = get_manual_browser_path()
+                
+                if browser_path is None:
+                    print("\n❌ 用户取消操作，程序退出")
+                    return False
+                
+                browser, browser_name = launch_browser_with_path(playwright, browser_path)
+                
+                if browser is None:
+                    print("\n❌ 无法启动浏览器，转换失败")
+                    print("💡 你可以运行以下命令安装浏览器：")
+                    print("  - playwright install msedge")
+                    print("  - playwright install chrome")
+                    print("  - playwright install chromium")
+                    return False
 
             print(f"🚀 本次使用浏览器：{browser_name}")
             context = browser.new_context()
@@ -210,16 +274,11 @@ def convert_single_file_with_timeout(context, html_path: Path, output_dir: Path,
     while retry_count < max_retries:
         print(f"\n🔄 正在转换：{html_path.name} (尝试 {retry_count + 1}/{max_retries})")
         
-        conversion_result = {'success': False, 'error': None, 'timeout': False}
-        conversion_thread = threading.Thread(
-            target=perform_conversion,
-            args=(context, html_path, output_dir, conversion_result)
-        )
-        conversion_thread.daemon = True
-        conversion_thread.start()
-        conversion_thread.join(timeout=timeout_seconds)
-        
-        if conversion_thread.is_alive():
+        try:
+            pdf_path = perform_conversion_with_timeout(context, html_path, output_dir, timeout_seconds)
+            print(f"✅ 已完成：{pdf_path.name}")
+            return True
+        except TimeoutError:
             print(f"⏱️  转换超时（超过 {timeout_seconds // 60} 分钟）")
             retry_count += 1
             
@@ -247,11 +306,8 @@ def convert_single_file_with_timeout(context, html_path: Path, output_dir: Path,
                         print("❌ 无效选项，请重新输入")
             else:
                 print(f"🔄 正在进行第 {retry_count + 1} 次重试...")
-        elif conversion_result['success']:
-            print(f"✅ 已完成：{conversion_result['pdf_path'].name}")
-            return True
-        else:
-            print(f"❌ 转换失败：{conversion_result['error']}")
+        except Exception as exc:
+            print(f"❌ 转换失败：{exc}")
             retry_count += 1
             if retry_count >= max_retries:
                 print(f"❌ 文件 {html_path.name} 转换失败，已达到最大重试次数")
@@ -261,27 +317,30 @@ def convert_single_file_with_timeout(context, html_path: Path, output_dir: Path,
     return False
 
 
-def perform_conversion(context, html_path: Path, output_dir: Path, result: dict):
-    """执行实际的PDF转换操作。"""
+def perform_conversion_with_timeout(context, html_path: Path, output_dir: Path, timeout_seconds: int):
+    """执行实际的PDF转换操作，使用Playwright内置超时。"""
+    page = None
     try:
         page = context.new_page()
-        page.goto(html_path.resolve().as_uri())
-
+        
+        page.goto(html_path.resolve().as_uri(), timeout=timeout_seconds * 1000)
+        
         pdf_bytes = page.pdf(
             format="A4",
             print_background=True,
-            prefer_css_page_size=True,
+            prefer_css_page_size=True
         )
 
         pdf_path = output_dir / f"{html_path.stem}.pdf"
         pdf_path.write_bytes(pdf_bytes)
-        page.close()
         
-        result['success'] = True
-        result['pdf_path'] = pdf_path
-    except Exception as exc:
-        result['success'] = False
-        result['error'] = str(exc)
+        return pdf_path
+    finally:
+        if page:
+            try:
+                page.close()
+            except Exception:
+                pass
 
 
 def wait_for_key():
