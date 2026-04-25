@@ -366,6 +366,114 @@ def wait_for_key():
         input("👋 按回车键退出程序...")
 
 
+def process_directory(directory_path: Path):
+    """处理单个目录中的HTML文件。"""
+    print(f"\n📂 正在处理目录：{directory_path}")
+    
+    # 切换到目标目录
+    original_cwd = Path.cwd()
+    os.chdir(directory_path)
+    
+    html_files = sorted([path for path in directory_path.glob("*.html") if path.is_file()])
+    if not html_files:
+        print("❌ 该目录下没有html文件，跳过处理")
+        os.chdir(original_cwd)
+        return False
+
+    print(f"📁 已找到 {len(html_files)} 个 HTML 文件：")
+    for html_file in html_files:
+        print(f"  📄 {html_file.name}")
+
+    config_path = directory_path / "config.ini"
+    if config_path.exists():
+        chunk_size = load_cut_size(config_path)
+        print(f"\n📋 已从配置文件读取拆分大小：每个文件 {chunk_size} 条消息")
+    else:
+        try:
+            chunk_size = int(input("\n请输入每个文件包含多少条消息（默认4000）：") or "4000")
+            chunk_size = max(1, chunk_size)
+        except ValueError:
+            chunk_size = 4000
+            print(f"⚠️  输入无效，已使用默认值：{chunk_size}")
+
+    pdf_dir = directory_path / "PDF输出"
+    temp_files = []
+
+    print("\n" + "=" * 40)
+    print("🔪 第1步：拆分 HTML 文件")
+    print("=" * 40)
+
+    total_parts = 0
+    all_split_files = []
+    for html_file in html_files:
+        parts, split_files = process_html_split(html_file, chunk_size)
+        total_parts += parts
+        all_split_files.extend(split_files)
+
+    if total_parts == 0:
+        print("❌ 没有成功拆分任何文件，跳过该目录。")
+        os.chdir(original_cwd)
+        return False
+
+    print("\n" + "=" * 40)
+    print("🔧 第2步：修复 HTML 打印格式")
+    print("=" * 40)
+
+    fixed_files = []
+    for split_file in all_split_files:
+        print(f"🔧 正在修复：{split_file.name}")
+        fixed_file = fix_html_print_issue(split_file)
+        fixed_files.append(fixed_file)
+        print(f"  ✅ 修复完成：{fixed_file.name}")
+
+    print("\n" + "=" * 40)
+    print("📄 第3步：转换为 PDF(此过程可能较慢，请耐心等待...)")
+    print("=" * 40)
+
+    pdf_dir.mkdir(exist_ok=True)
+    success = convert_html_to_pdf(fixed_files, pdf_dir)
+
+    print("\n" + "=" * 40)
+    print("🧹 第4步：清理临时文件")
+    print("=" * 40)
+
+    temp_files.extend(all_split_files)
+    temp_files.extend(fixed_files)
+
+    deleted_count = 0
+    for temp_file in temp_files:
+        try:
+            if temp_file.exists():
+                temp_file.unlink()
+                deleted_count += 1
+                print(f"  🗑️  已删除：{temp_file.name}")
+        except Exception as exc:
+            print(f"  ❌ 删除失败 {temp_file.name}：{exc}")
+
+    print(f"🧹 已清理 {deleted_count} 个临时文件。")
+
+    print("\n" + "=" * 60)
+    print("📊 处理完成总结")
+    print("=" * 60)
+    print(f"📄 原始 HTML 文件：{len(html_files)} 个")
+    print(f"🔪 拆分后文件：{total_parts} 个")
+    print(f"🔧 修复后文件：{len(fixed_files)} 个")
+    print(f"📄 PDF 输出文件：{len(list(pdf_dir.glob('*.pdf')))} 个")
+    print(f"🧹 清理临时文件：{deleted_count} 个")
+
+    if success:
+        print("\n🎉 该目录处理完成。")
+        print(f"📄 最终保留：{len(html_files)} 个原始 HTML 文件")
+        print(f"📄 最终保留：{len(list(pdf_dir.glob('*.pdf')))} 个 PDF 文件")
+        print("🧹 所有临时文件已自动清理。")
+    else:
+        print("\n❌ PDF 转换可能存在问题，请检查浏览器是否安装。")
+
+    # 恢复原始工作目录
+    os.chdir(original_cwd)
+    return success
+
+
 def main():
     """主函数。"""
     if getattr(sys, "frozen", False):
@@ -378,13 +486,96 @@ def main():
     print("=" * 60)
     print(f"📁 当前工作目录：{base_dir}")
 
-    os.chdir(base_dir)
+    # 选择处理模式
+    print("\n请选择处理模式：")
+    print("  1. 处理当前目录（直接识别当前目录下的HTML文件）")
+    print("  2. 批量处理多个目录（手动填写总目录路径，自动识别子目录）")
+    
+    while True:
+        choice = input("\n请输入选项 (1/2): ").strip()
+        if choice == '1':
+            # 处理当前目录
+            success = process_directory(base_dir)
+            break
+        elif choice == '2':
+            # 批量处理多个目录
+            print("\n" + "=" * 60)
+            print("📂 批量处理模式：请输入总目录路径")
+            print("=" * 60)
+            print("💡 程序会自动识别该目录下的所有子文件夹，并在每个子文件夹中执行转换")
+            print("   批量处理模式下，所有子文件夹将使用相同的消息数量设置")
+            print("   例如：输入 C:\\聊天记录，程序会处理 C:\\聊天记录\\文件夹1、C:\\聊天记录\\文件夹2 等")
+            
+            while True:
+                root_dir_path = input("\n请输入总目录路径（或输入 'q' 返回主菜单）: ").strip().strip('"')
+                
+                if root_dir_path.lower() == 'q':
+                    print("👋 已返回主菜单")
+                    wait_for_key()
+                    return
+                
+                if not root_dir_path:
+                    print("❌ 路径不能为空，请重新输入")
+                    continue
+                
+                root_dir = Path(root_dir_path)
+                if not root_dir.exists():
+                    print(f"❌ 目录不存在：{root_dir}")
+                    print("   请检查路径是否正确，或尝试拖拽文件夹到此处")
+                    continue
+                
+                if not root_dir.is_dir():
+                    print(f"❌ 路径不是目录：{root_dir}")
+                    continue
+                
+                # 查找所有子目录
+                sub_dirs = [d for d in root_dir.iterdir() if d.is_dir()]
+                if not sub_dirs:
+                    print(f"❌ 该目录下没有子文件夹：{root_dir}")
+                    continue
+                
+                print(f"\n📁 找到 {len(sub_dirs)} 个子文件夹：")
+                for sub_dir in sub_dirs:
+                    print(f"  📂 {sub_dir.name}")
+                
+                # 批量处理模式下统一询问消息数量
+                print("\n" + "=" * 40)
+                print("📋 批量处理设置：请输入每个文件包含多少条消息")
+                print("=" * 40)
+                
+                try:
+                    batch_chunk_size = int(input("\n请输入每个文件包含多少条消息（默认4000）：") or "4000")
+                    batch_chunk_size = max(1, batch_chunk_size)
+                    print(f"✅ 已设置：每个文件包含 {batch_chunk_size} 条消息")
+                except ValueError:
+                    batch_chunk_size = 4000
+                    print(f"⚠️  输入无效，已使用默认值：{batch_chunk_size}")
+                
+                confirm = input("\n确认开始批量处理这些文件夹吗？(y/n): ").strip().lower()
+                if confirm == 'y' or confirm == 'yes' or confirm == '是':
+                    total_success = 0
+                    for i, sub_dir in enumerate(sub_dirs, 1):
+                        print(f"\n{'='*60}")
+                        print(f"📂 正在处理第 {i}/{len(sub_dirs)} 个文件夹：{sub_dir.name}")
+                        print('='*60)
+                        
+                        if process_directory(sub_dir, batch_chunk_size):
+                            total_success += 1
+                        
+                        if i < len(sub_dirs):
+                            print("\n⏭️  继续处理下一个文件夹...")
+                    
+                    print(f"\n🎉 批量处理完成！成功处理 {total_success}/{len(sub_dirs)} 个文件夹")
+                    break
+                else:
+                    print("👋 已取消批量处理")
+                    continue
+            
+            break
+        else:
+            print("❌ 无效选项，请重新输入")
 
-    html_files = sorted([path for path in base_dir.glob("*.html") if path.is_file()])
-    if not html_files:
-        print("❌ 目录下没有html文件，请确保你已经将本程序和导出的html格式文件放在一起（同级目录下）了")
-        wait_for_key()
-        return
+    wait_for_key()
 
     print(f"\n📁 已找到 {len(html_files)} 个 HTML 文件：")
     for html_file in html_files:
