@@ -223,6 +223,9 @@ def convert_html_to_pdf(html_files, output_dir: Path):
     """将 HTML 文件转换为 PDF。"""
     print("\n📄 开始把 HTML 转成 PDF，请稍候...")
 
+    browser = None
+    context = None
+    
     try:
         with sync_playwright() as playwright:
             browser, browser_name = get_available_browser(playwright)
@@ -255,16 +258,36 @@ def convert_html_to_pdf(html_files, output_dir: Path):
                 success = convert_single_file_with_timeout(context, html_path, output_dir)
                 if not success:
                     print(f"\n⚠️  文件 {html_path.name} 转换失败或被跳过")
-                    browser.close()
+                    # 确保资源清理
+                    if context:
+                        context.close()
+                    if browser:
+                        browser.close()
                     return False
 
-            browser.close()
             print("\n🎉 全部 PDF 转换完成。")
             return True
 
     except Exception as exc:
         print(f"\n❌ PDF 转换时出现错误：{exc}")
+        # 确保异常情况下资源清理
+        try:
+            if context:
+                context.close()
+            if browser:
+                browser.close()
+        except Exception:
+            pass
         return False
+    finally:
+        # 确保资源完全释放
+        try:
+            if context:
+                context.close()
+            if browser:
+                browser.close()
+        except Exception:
+            pass
 
 
 def convert_single_file_with_timeout(context, html_path: Path, output_dir: Path, max_retries: int = 3, timeout_seconds: int = 600):
@@ -366,8 +389,13 @@ def wait_for_key():
         input("👋 按回车键退出程序...")
 
 
-def process_directory(directory_path: Path):
-    """处理单个目录中的HTML文件。"""
+def process_directory(directory_path: Path, fixed_chunk_size: int = None):
+    """处理单个目录中的HTML文件。
+    
+    Args:
+        directory_path: 要处理的目录路径
+        fixed_chunk_size: 固定的消息数量，如果为None则询问用户
+    """
     print(f"\n📂 正在处理目录：{directory_path}")
     
     # 切换到目标目录
@@ -384,11 +412,17 @@ def process_directory(directory_path: Path):
     for html_file in html_files:
         print(f"  📄 {html_file.name}")
 
+    # 确定消息数量
     config_path = directory_path / "config.ini"
     if config_path.exists():
         chunk_size = load_cut_size(config_path)
         print(f"\n📋 已从配置文件读取拆分大小：每个文件 {chunk_size} 条消息")
+    elif fixed_chunk_size is not None:
+        # 使用固定的消息数量（批量处理模式）
+        chunk_size = fixed_chunk_size
+        print(f"\n📋 批量处理模式：每个文件固定包含 {chunk_size} 条消息")
     else:
+        # 询问用户输入（单目录处理模式）
         try:
             chunk_size = int(input("\n请输入每个文件包含多少条消息（默认4000）：") or "4000")
             chunk_size = max(1, chunk_size)
@@ -471,6 +505,14 @@ def process_directory(directory_path: Path):
 
     # 恢复原始工作目录
     os.chdir(original_cwd)
+    
+    # 强制垃圾回收，确保浏览器资源完全释放
+    import gc
+    gc.collect()
+    
+    # 添加短暂延迟，确保系统资源完全释放
+    time.sleep(1)
+    
     return success
 
 
