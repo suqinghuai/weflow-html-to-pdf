@@ -35,7 +35,14 @@ def extract_data_block(html_text: str):
 
 def parse_data_list(raw_data: str):
     """解析消息列表。"""
-    return json.loads("[" + raw_data + "]")
+    # 清理JSON数据中的无效控制字符
+    # 控制字符是ASCII码0-31（除了\n, \r, \t）
+    cleaned_data = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', raw_data)
+    
+    # 处理可能存在的换行符和制表符问题
+    cleaned_data = cleaned_data.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+    
+    return json.loads("[" + cleaned_data + "]")
 
 
 def build_data_block(messages, indent: str) -> str:
