@@ -23,26 +23,62 @@ def load_cut_size(config_path: Path, default_size: int = 4000) -> int:
 
 def extract_data_block(html_text: str):
     """提取 HTML 中的 WEFLOW_DATA 数据块。"""
-    pattern = re.compile(
-        r"^(?P<indent>\s*)window\.WEFLOW_DATA\s*=\s*\[(?P<data>.*?)\];",
-        re.DOTALL | re.MULTILINE,
-    )
-    match = pattern.search(html_text)
-    if not match:
+    marker = "window.WEFLOW_DATA"
+    marker_index = html_text.find(marker)
+    if marker_index == -1:
         return None, None, None
-    return match.group("data"), match.group("indent"), match.span()
+
+    line_start = html_text.rfind("\n", 0, marker_index) + 1
+    indent_match = re.match(r"\s*", html_text[line_start:marker_index])
+    indent = indent_match.group(0) if indent_match else ""
+
+    array_start = html_text.find("[", marker_index)
+    if array_start == -1:
+        return None, None, None
+
+    depth = 0
+    in_string = None
+    escape = False
+    array_end = None
+
+    for index in range(array_start, len(html_text)):
+        char = html_text[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == in_string:
+                in_string = None
+            continue
+
+        if char in ("\"", "'"):
+            in_string = char
+            continue
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+            if depth == 0:
+                array_end = index
+                break
+
+    if array_end is None:
+        return None, None, None
+
+    span_end = array_end + 1
+    while span_end < len(html_text) and html_text[span_end].isspace():
+        span_end += 1
+    if span_end < len(html_text) and html_text[span_end] == ";":
+        span_end += 1
+
+    raw_data = html_text[array_start + 1 : array_end]
+    return raw_data, indent, (line_start, span_end)
 
 
 def parse_data_list(raw_data: str):
     """解析消息列表。"""
-    # 清理JSON数据中的无效控制字符
-    # 控制字符是ASCII码0-31（除了\n, \r, \t）
-    cleaned_data = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', raw_data)
-    
-    # 处理可能存在的换行符和制表符问题
-    cleaned_data = cleaned_data.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
-    
-    return json.loads("[" + cleaned_data + "]")
+    return json.loads("[" + raw_data + "]")
 
 
 def build_data_block(messages, indent: str) -> str:
