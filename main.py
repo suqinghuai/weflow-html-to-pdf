@@ -197,6 +197,7 @@ def split_messages(messages, chunk_size: int):
 def process_html_split(html_path: Path, chunk_size: int):
     """分割 HTML 文件并在同目录输出 part 文件。"""
     html_text = html_path.read_text(encoding="utf-8")
+    # 授权成功后立即更新计数（在分割前只执行一次）
     raw_data, indent, span = extract_data_block(html_text)
     if raw_data is None:
         print(f"❌ 处理失败：在 {html_path.name} 中没有找到聊天数据。")
@@ -207,6 +208,11 @@ def process_html_split(html_path: Path, chunk_size: int):
         print(f"❌ 处理失败：{html_path.name} 中没有可用消息。")
         return 0, []
 
+    # 授权成功后立即更新HTML中的聊天记录数量
+    html_text = update_counts(html_text, len(messages))
+    # 写回更新后的原始文件
+    html_path.write_text(html_text, encoding="utf-8")
+
     total_parts = (len(messages) + chunk_size - 1) // chunk_size
     base_name = html_path.stem
     split_files = []
@@ -214,9 +220,8 @@ def process_html_split(html_path: Path, chunk_size: int):
     print(f"📋 正在处理 {html_path.name}：共 {len(messages)} 条消息，准备拆分为 {total_parts} 个文件。")
 
     for index, chunk in enumerate(split_messages(messages, chunk_size), start=1):
-        updated_html = update_counts(html_text, len(chunk))
         data_block = build_data_block(chunk, indent)
-        updated_html = updated_html[: span[0]] + data_block + updated_html[span[1] :]
+        updated_html = html_text[: span[0]] + data_block + html_text[span[1] :]
 
         output_name = f"{base_name}_part{index:03d}.html"
         output_path = html_path.parent / output_name
@@ -533,6 +538,28 @@ def process_directory(directory_path: Path, fixed_chunk_size: int = None):
     print(f"📁 已找到 {len(html_files)} 个 HTML 文件：")
     for html_file in html_files:
         print(f"  📄 {html_file.name}")
+
+    # 授权成功后立即读取每个HTML文件，显示消息数量
+    print("\n📋 正在读取聊天数据...")
+    file_message_counts = {}
+    for html_file in html_files:
+        try:
+            html_text = html_file.read_text(encoding="utf-8")
+            raw_data, _, _ = extract_data_block(html_text)
+            if raw_data is not None:
+                messages = parse_data_list(raw_data)
+                count = len(messages)
+                file_message_counts[html_file.name] = count
+                print(f"  ✅ {html_file.name}：共 {count} 条消息")
+            else:
+                file_message_counts[html_file.name] = 0
+                print(f"  ⚠️  {html_file.name}：未找到聊天数据")
+        except Exception as exc:
+            file_message_counts[html_file.name] = 0
+            print(f"  ❌ {html_file.name}：读取失败 - {exc}")
+
+    total_messages = sum(file_message_counts.values())
+    print(f"📊 合计：{total_messages} 条消息")
 
     config_path = directory_path / "config.ini"
     if config_path.exists():
