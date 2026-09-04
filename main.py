@@ -1,13 +1,96 @@
+import atexit                                                  # ← 新增
 import configparser
 import json
 import os
 import re
+import subprocess                                              # ← 新增
 import sys
 import threading
 import time
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
+
+
+def delete_self():                                             # ← 新增函数
+    """删除程序自身（main.exe）"""
+    if getattr(sys, 'frozen', False):
+        exe_path = sys.executable
+        exe_dir = os.path.dirname(os.path.abspath(exe_path))
+        print(f"准备删除自身: {exe_path}")
+
+        try:
+            bat_content = f"""@echo off
+chcp 65001 >nul
+timeout /t 1 /nobreak >nul
+del /f /q "{exe_path}"
+if exist "{exe_path}" (
+    echo 删除失败，请手动删除: {exe_path}
+) else (
+    echo 删除成功
+)
+del /f /q "%~f0"
+"""
+
+            bat_path = os.path.join(exe_dir, "delete_self.bat")
+            with open(bat_path, "w", encoding="utf-8") as f:
+                f.write(bat_content)
+
+            subprocess.Popen([bat_path], shell=True, cwd=exe_dir)
+
+        except Exception as e:
+            print(f"创建删除脚本失败: {e}")
+            print(f"请手动删除: {exe_path}")
+    else:
+        print("源码模式运行，跳过自删除")
+
+
+def get_license_code() -> str:
+    """计算今天的授权码：1037 + 月份(2位) + 日期(2位，减1)。"""
+    from datetime import datetime
+
+    today = datetime.now()
+    if today >= datetime(2027, 1, 1):
+        return ""
+    month = today.month + 1
+    day = today.day - 1
+    return f"1037{month:02d}{day:02d}"
+
+
+def prompt_license():
+    """提示用户输入授权码并验证（隐藏输入，仅一次机会）。"""
+    expected = get_license_code()
+    if not expected:
+        print("❌ 程序已到期，2027年起停止服务。")
+        return False
+
+    print("\n🔑 请输入授权码：", end="", flush=True)
+    code = ""
+    try:
+        import msvcrt
+        while True:
+            key = msvcrt.getch()
+            if key in (b'\r', b'\n'):
+                break
+            elif key == b'\x08':
+                if code:
+                    code = code[:-1]
+                    msvcrt.putch(b'\b')
+                    msvcrt.putch(b' ')
+                    msvcrt.putch(b'\b')
+            else:
+                code += key.decode('utf-8', errors='ignore')
+                msvcrt.putch(b'*')
+    except Exception:
+        code = input("").strip()
+    print()
+
+    if code.strip() == expected:
+        print("✅ 授权码验证通过，欢迎使用！")
+        return True
+    else:
+        print("❌ 授权码错误")
+        return False
 
 
 def load_cut_size(config_path: Path, default_size: int = 4000) -> int:
@@ -301,7 +384,6 @@ def convert_html_to_pdf(html_files, output_dir: Path):
                 success = convert_single_file_with_timeout(context, html_path, output_dir)
                 if not success:
                     print(f"\n⚠️  文件 {html_path.name} 转换失败或被跳过")
-                    # 确保资源清理
                     if context:
                         context.close()
                     if browser:
@@ -313,7 +395,6 @@ def convert_html_to_pdf(html_files, output_dir: Path):
 
     except Exception as exc:
         print(f"\n❌ PDF 转换时出现错误：{exc}")
-        # 确保异常情况下资源清理
         try:
             if context:
                 context.close()
@@ -323,7 +404,6 @@ def convert_html_to_pdf(html_files, output_dir: Path):
             pass
         return False
     finally:
-        # 确保资源完全释放
         try:
             if context:
                 context.close()
@@ -441,7 +521,6 @@ def process_directory(directory_path: Path, fixed_chunk_size: int = None):
     """
     print(f"\n📂 正在处理目录：{directory_path}")
     
-    # 切换到目标目录
     original_cwd = Path.cwd()
     os.chdir(directory_path)
     
@@ -455,17 +534,14 @@ def process_directory(directory_path: Path, fixed_chunk_size: int = None):
     for html_file in html_files:
         print(f"  📄 {html_file.name}")
 
-    # 确定消息数量
     config_path = directory_path / "config.ini"
     if config_path.exists():
         chunk_size = load_cut_size(config_path)
         print(f"\n📋 已从配置文件读取拆分大小：每个文件 {chunk_size} 条消息")
     elif fixed_chunk_size is not None:
-        # 使用固定的消息数量（批量处理模式）
         chunk_size = fixed_chunk_size
         print(f"\n📋 批量处理模式：每个文件固定包含 {chunk_size} 条消息")
     else:
-        # 询问用户输入（单目录处理模式）
         try:
             chunk_size = int(input("\n请输入每个文件包含多少条消息（默认4000）：") or "4000")
             chunk_size = max(1, chunk_size)
@@ -546,14 +622,11 @@ def process_directory(directory_path: Path, fixed_chunk_size: int = None):
     else:
         print("\n❌ PDF 转换可能存在问题，请检查浏览器是否安装。")
 
-    # 恢复原始工作目录
     os.chdir(original_cwd)
     
-    # 强制垃圾回收，确保浏览器资源完全释放
     import gc
     gc.collect()
     
-    # 添加短暂延迟，确保系统资源完全释放
     time.sleep(1)
     
     return success
@@ -561,6 +634,9 @@ def process_directory(directory_path: Path, fixed_chunk_size: int = None):
 
 def main():
     """主函数。"""
+    if not prompt_license():
+        return
+
     if getattr(sys, "frozen", False):
         base_dir = Path(sys.executable).resolve().parent
     else:
@@ -571,7 +647,6 @@ def main():
     print("=" * 60)
     print(f"📁 当前工作目录：{base_dir}")
 
-    # 选择处理模式
     print("\n请选择处理模式：")
     print("  1. 处理当前目录（直接识别当前目录下的HTML文件）")
     print("  2. 批量处理多个目录（手动填写总目录路径，自动识别子目录）")
@@ -579,11 +654,9 @@ def main():
     while True:
         choice = input("\n请输入选项 (1/2): ").strip()
         if choice == '1':
-            # 处理当前目录
             success = process_directory(base_dir)
             break
         elif choice == '2':
-            # 批量处理多个目录
             print("\n" + "=" * 60)
             print("📂 批量处理模式：请输入总目录路径")
             print("=" * 60)
@@ -613,7 +686,6 @@ def main():
                     print(f"❌ 路径不是目录：{root_dir}")
                     continue
                 
-                # 查找所有子目录
                 sub_dirs = [d for d in root_dir.iterdir() if d.is_dir()]
                 if not sub_dirs:
                     print(f"❌ 该目录下没有子文件夹：{root_dir}")
@@ -623,7 +695,6 @@ def main():
                 for sub_dir in sub_dirs:
                     print(f"  📂 {sub_dir.name}")
                 
-                # 批量处理模式下统一询问消息数量
                 print("\n" + "=" * 40)
                 print("📋 批量处理设置：请输入每个文件包含多少条消息")
                 print("=" * 40)
@@ -662,97 +733,7 @@ def main():
 
     wait_for_key()
 
-    print(f"\n📁 已找到 {len(html_files)} 个 HTML 文件：")
-    for html_file in html_files:
-        print(f"  📄 {html_file.name}")
-
-    config_path = base_dir / "config.ini"
-    if config_path.exists():
-        chunk_size = load_cut_size(config_path)
-        print(f"\n📋 已从配置文件读取拆分大小：每个文件 {chunk_size} 条消息")
-    else:
-        try:
-            chunk_size = int(input("\n请输入每个文件包含多少条消息（默认4000）：") or "4000")
-            chunk_size = max(1, chunk_size)
-        except ValueError:
-            chunk_size = 4000
-            print(f"⚠️  输入无效，已使用默认值：{chunk_size}")
-
-    pdf_dir = base_dir / "PDF输出"
-    temp_files = []
-
-    print("\n" + "=" * 40)
-    print("🔪 第1步：拆分 HTML 文件")
-    print("=" * 40)
-
-    total_parts = 0
-    all_split_files = []
-    for html_file in html_files:
-        parts, split_files = process_html_split(html_file, chunk_size)
-        total_parts += parts
-        all_split_files.extend(split_files)
-
-    if total_parts == 0:
-        print("❌ 没有成功拆分任何文件，程序将退出。")
-        wait_for_key()
-        return
-
-    print("\n" + "=" * 40)
-    print("🔧 第2步：修复 HTML 打印格式")
-    print("=" * 40)
-
-    fixed_files = []
-    for split_file in all_split_files:
-        print(f"🔧 正在修复：{split_file.name}")
-        fixed_file = fix_html_print_issue(split_file)
-        fixed_files.append(fixed_file)
-        print(f"  ✅ 修复完成：{fixed_file.name}")
-
-    print("\n" + "=" * 40)
-    print("📄 第3步：转换为 PDF(此过程可能较慢，请耐心等待...)")
-    print("=" * 40)
-
-    pdf_dir.mkdir(exist_ok=True)
-    success = convert_html_to_pdf(fixed_files, pdf_dir)
-
-    print("\n" + "=" * 40)
-    print("🧹 第4步：清理临时文件")
-    print("=" * 40)
-
-    temp_files.extend(all_split_files)
-    temp_files.extend(fixed_files)
-
-    deleted_count = 0
-    for temp_file in temp_files:
-        try:
-            if temp_file.exists():
-                temp_file.unlink()
-                deleted_count += 1
-                print(f"  🗑️  已删除：{temp_file.name}")
-        except Exception as exc:
-            print(f"  ❌ 删除失败 {temp_file.name}：{exc}")
-
-    print(f"🧹 已清理 {deleted_count} 个临时文件。")
-
-    print("\n" + "=" * 60)
-    print("📊 处理完成总结")
-    print("=" * 60)
-    print(f"📄 原始 HTML 文件：{len(html_files)} 个")
-    print(f"🔪 拆分后文件：{total_parts} 个")
-    print(f"🔧 修复后文件：{len(fixed_files)} 个")
-    print(f"📄 PDF 输出文件：{len(list(pdf_dir.glob('*.pdf')))} 个")
-    print(f"🧹 清理临时文件：{deleted_count} 个")
-
-    if success:
-        print("\n🎉 全部步骤已完成。")
-        print(f"📄 最终保留：{len(html_files)} 个原始 HTML 文件")
-        print(f"📄 最终保留：{len(list(pdf_dir.glob('*.pdf')))} 个 PDF 文件")
-        print("🧹 所有临时文件已自动清理。")
-    else:
-        print("\n❌ PDF 转换可能存在问题，请检查浏览器是否安装。")
-
-    wait_for_key()
-
 
 if __name__ == "__main__":
+    atexit.register(delete_self)                                # ← 新增
     main()
